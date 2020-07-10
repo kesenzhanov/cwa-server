@@ -20,6 +20,8 @@
 
 package app.coronawarn.server.common.persistence.domain;
 
+import static app.coronawarn.server.common.persistence.domain.validation.ValidSubmissionTimestampValidator.SECONDS_PER_HOUR;
+import static app.coronawarn.server.common.persistence.service.DiagnosisKeyServiceTestHelper.buildDiagnosisKeyForSubmissionTimestamp;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -27,7 +29,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import app.coronawarn.server.common.persistence.exception.InvalidDiagnosisKeyException;
 import app.coronawarn.server.common.protocols.external.exposurenotification.TemporaryExposureKey;
 import com.google.protobuf.ByteString;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -37,7 +40,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class DiagnosisKeyBuilderTest {
 
-  private final byte[] expKeyData = "16-bytelongarray".getBytes(Charset.defaultCharset());
+  private final byte[] expKeyData = "16-bytelongarray".getBytes(StandardCharsets.US_ASCII);
   private final int expRollingStartIntervalNumber = 73800;
   private final int expTransmissionRiskLevel = 1;
   private final long expSubmissionTimestamp = 2L;
@@ -179,16 +182,43 @@ class DiagnosisKeyBuilderTest {
   @ValueSource(strings = {"17--bytelongarray", "", "1"})
   void keyDataMustHaveValidLength(String invalidKeyString) {
     assertThat(
-        catchThrowable(() -> keyWithKeyData(invalidKeyString.getBytes(Charset.defaultCharset()))))
+        catchThrowable(() -> keyWithKeyData(invalidKeyString.getBytes(StandardCharsets.US_ASCII))))
         .isInstanceOf(InvalidDiagnosisKeyException.class);
   }
 
   @Test
   void keyDataDoesNotThrowOnValid() {
-    assertThatCode(() -> keyWithKeyData("16-bytelongarray".getBytes(Charset.defaultCharset())))
+    assertThatCode(() -> keyWithKeyData("16-bytelongarray".getBytes(StandardCharsets.US_ASCII)))
         .doesNotThrowAnyException();
   }
 
+  @ParameterizedTest
+  @ValueSource(longs = {-1L, Long.MAX_VALUE})
+  void submissionTimestampMustBeValid(long submissionTimestamp) {
+    assertThat(
+        catchThrowable(() -> buildDiagnosisKeyForSubmissionTimestamp(submissionTimestamp)))
+        .isInstanceOf(InvalidDiagnosisKeyException.class);
+  }
+
+  @Test
+  void submissionTimestampMustNotBeInTheFuture() {
+    assertThat(catchThrowable(
+        () -> buildDiagnosisKeyForSubmissionTimestamp(getCurrentHoursSinceEpoch() + 1)))
+            .isInstanceOf(InvalidDiagnosisKeyException.class);
+    assertThat(catchThrowable(() -> buildDiagnosisKeyForSubmissionTimestamp(
+        Instant.now().getEpochSecond() /* accidentally forgot to divide by SECONDS_PER_HOUR */)))
+            .isInstanceOf(InvalidDiagnosisKeyException.class);
+  }
+
+  @Test
+  void submissionTimestampDoesNotThrowOnValid() {
+    assertThatCode(() -> buildDiagnosisKeyForSubmissionTimestamp(0L)).doesNotThrowAnyException();
+    assertThatCode(() -> buildDiagnosisKeyForSubmissionTimestamp(getCurrentHoursSinceEpoch())).doesNotThrowAnyException();
+    assertThatCode(
+        () -> buildDiagnosisKeyForSubmissionTimestamp(Instant.now().minus(Duration.ofHours(2)).getEpochSecond() / SECONDS_PER_HOUR))
+            .doesNotThrowAnyException();
+  }
+  
   private DiagnosisKey keyWithKeyData(byte[] expKeyData) {
     return DiagnosisKey.builder()
         .withKeyData(expKeyData)
@@ -223,7 +253,7 @@ class DiagnosisKeyBuilderTest {
   }
 
   private long getCurrentHoursSinceEpoch() {
-    return Instant.now().getEpochSecond() / 3600L;
+    return Instant.now().getEpochSecond() / SECONDS_PER_HOUR;
   }
 
   private void assertDiagnosisKeyEquals(DiagnosisKey actDiagnosisKey, long expSubmissionTimestamp) {
